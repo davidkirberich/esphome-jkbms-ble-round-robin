@@ -4,6 +4,9 @@ substitutions:
   rr_check_interval: 5s
   rr_disconnect_timeout: 10s
   rr_handover_delay: 1s
+  rr_reset_ble_on_handover: "false"
+  rr_ble_restart_timeout: 15s
+  rr_ble_off_delay: 1s
 
 esp32_ble:
   max_connections: ${len(rr_bms)}
@@ -46,6 +49,9 @@ globals:
 
 esphome:
   min_version: 2026.9.0
+  includes:
+    - <esp_bt_main.h>
+    - <esp_bt.h>
   on_boot:
     priority: -10
     then:
@@ -103,6 +109,12 @@ script:
                     }
                     return !id(rr_suspended);
                 then:
+                  - if:
+                      condition:
+                        lambda: "return ${rr_reset_ble_on_handover};"
+                      then:
+                        - script.execute: rr_restart_ble_stack
+                        - script.wait: rr_restart_ble_stack
                   - delay: ${rr_handover_delay}
                   - lambda: |-
                       if (id(rr_suspended)) {
@@ -127,6 +139,70 @@ script:
                       level: ERROR
                       tag: round_robin
                       format: "BLE disconnect timed out; all clients remain disabled, retrying on next check"
+
+  - id: rr_restart_ble_stack
+    mode: single
+    then:
+      - logger.log:
+          tag: round_robin
+          format: "Experimental handover: stopping entire BLE stack"
+      - ble.disable:
+      - wait_until:
+          condition:
+            lambda: |-
+              return esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED &&
+                     esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE;
+          timeout: ${rr_ble_restart_timeout}
+      - if:
+          condition:
+            lambda: |-
+              return !id(rr_suspended) &&
+                     esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED &&
+                     esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE;
+          then:
+            - delay: ${rr_ble_off_delay}
+            - ble.enable:
+            - wait_until:
+                condition:
+                  lambda: |-
+                    if (!esphome::esp32_ble::global_ble->is_active()) {
+                      return false;
+                    }
+                    for (auto *client : id(rr_clients)) {
+                      if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
+                        return false;
+                      }
+                    }
+                    return true;
+                timeout: ${rr_ble_restart_timeout}
+            - if:
+                condition:
+                  lambda: |-
+                    if (!esphome::esp32_ble::global_ble->is_active()) {
+                      return false;
+                    }
+                    for (auto *client : id(rr_clients)) {
+                      if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
+                        return false;
+                      }
+                    }
+                    return true;
+                then:
+                  - logger.log:
+                      tag: round_robin
+                      format: "BLE stack restarted; all clients registered and idle"
+                else:
+                  - lambda: "id(rr_suspended) = true;"
+                  - logger.log:
+                      level: ERROR
+                      tag: round_robin
+                      format: "BLE restart timed out; scheduler suspended, reboot gateway to recover"
+          else:
+            - lambda: "id(rr_suspended) = true;"
+            - logger.log:
+                level: ERROR
+                tag: round_robin
+                format: "BLE shutdown timed out; scheduler suspended, reboot gateway to recover"
 
 interval:
   - interval: ${rr_check_interval}
@@ -159,6 +235,7 @@ ota:
       then:
         - lambda: "id(rr_suspended) = true;"
         - script.stop: rr_switch_connection
+        - script.stop: rr_restart_ble_stack
         - lambda: |-
             id(rr_next_index) = id(rr_active_index);
             id(rr_connection_enabled) = false;

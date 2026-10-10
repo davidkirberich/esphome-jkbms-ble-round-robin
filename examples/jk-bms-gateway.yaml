@@ -13,6 +13,10 @@ substitutions:
   rr_check_interval: 5s
   rr_disconnect_timeout: 10s
   rr_handover_delay: 1s
+  # Experimental: restarts ALL BLE functions, not just the active BMS client.
+  rr_reset_ble_on_handover: "true"
+  rr_ble_restart_timeout: 15s
+  rr_ble_off_delay: 1s
   bms_throttle: 5s
 
 packages:
