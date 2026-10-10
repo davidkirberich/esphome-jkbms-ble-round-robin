@@ -1,0 +1,243 @@
+substitutions:
+  name: jk-bms-gateway
+  device_description: "Monitor two JK-BMS via bluetooth sequentially"
+  external_components_source: github://syssi/esphome-jk-bms@main
+  protocol_version: JK02_32S
+  rr_bms:
+    - client: client_200
+      online: bms200_online_status
+    - client: client_300
+      online: bms300_online_status
+  rr_cycle_ms: "60000"
+  rr_min_dwell_ms: "10000"
+  rr_check_interval: 5s
+  rr_disconnect_timeout: 10s
+  bms_throttle: 5s
+
+packages:
+  round_robin:
+    url: https://github.com/davidkirberich/esphome-jkbms-ble-round-robin
+    ref: main
+    files:
+      - packages/round_robin.yaml
+    refresh: 0s
+
+esphome:
+  name: ${name}
+  friendly_name: ${name}
+  comment: ${device_description}
+  project:
+    name: "syssi.esphome-jk-bms"
+    version: 2.5.0
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+external_components:
+  - source: ${external_components_source}
+    refresh: 0s
+
+wifi:
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+      priority: 10.0
+    - ssid: !secret wifi_backup_ssid
+      password: !secret wifi_backup_password
+      priority: 0.0
+  min_auth_mode: WPA2
+
+logger:
+  level: INFO
+  logs:
+    jk_bms_ble: INFO
+    bms_timing: INFO
+    round_robin: INFO
+    esp32_ble_tracker: INFO
+    esp32_ble_client: INFO
+
+api:
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: false
+
+ble_client:
+  - mac_address: !secret bms200_mac_address
+    id: client_200
+    auto_connect: false
+  - mac_address: !secret bms300_mac_address
+    id: client_300
+    auto_connect: false
+
+jk_bms_ble:
+  - ble_client_id: client_200
+    protocol_version: ${protocol_version}
+    throttle: ${bms_throttle}
+    id: bms200
+  - ble_client_id: client_300
+    protocol_version: ${protocol_version}
+    throttle: ${bms_throttle}
+    id: bms300
+
+binary_sensor:
+  - platform: jk_bms_ble
+    jk_bms_ble_id: bms200
+    balancing:
+      name: "jkbms200 Balancing"
+    charging:
+      name: "jkbms200 Charging"
+    discharging:
+      name: "jkbms200 Discharging"
+    online_status:
+      id: bms200_online_status
+      name: "jkbms200 Online Status"
+      on_press:
+        - lambda: |-
+            ESP_LOGI("bms_timing", "jkbms200 online after %u ms",
+                     static_cast<unsigned>(millis() - id(rr_connect_start_time)));
+  - platform: jk_bms_ble
+    jk_bms_ble_id: bms300
+    balancing:
+      name: "jkbms300 Balancing"
+    charging:
+      name: "jkbms300 Charging"
+    discharging:
+      name: "jkbms300 Discharging"
+    online_status:
+      id: bms300_online_status
+      name: "jkbms300 Online Status"
+      on_press:
+        - lambda: |-
+            ESP_LOGI("bms_timing", "jkbms300 online after %u ms",
+                     static_cast<unsigned>(millis() - id(rr_connect_start_time)));
+
+button:
+  - platform: jk_bms_ble
+    jk_bms_ble_id: bms200
+    retrieve_settings:
+      name: "jkbms200 Retrieve Settings"
+    retrieve_device_info:
+      name: "jkbms200 Retrieve Device Info"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: bms300
+    retrieve_settings:
+      name: "jkbms300 Retrieve Settings"
+    retrieve_device_info:
+      name: "jkbms300 Retrieve Device Info"
+  - platform: template
+    name: "BMS Force Switch Connection"
+    on_press:
+      - if:
+          condition:
+            and:
+              - lambda: "return !id(rr_suspended) && id(rr_configuration_valid);"
+              - not:
+                  script.is_running: rr_switch_connection
+          then:
+            - script.execute: rr_switch_connection
+          else:
+            - logger.log:
+                level: WARN
+                tag: round_robin
+                format: "Manual handover ignored: scheduler suspended, invalid configuration or handover in progress"
+
+sensor:
+  - platform: jk_bms_ble
+    jk_bms_ble_id: bms200
+    min_cell_voltage:
+      name: "jkbms200 Min Cell Voltage"
+    max_cell_voltage:
+      name: "jkbms200 Max Cell Voltage"
+    delta_cell_voltage:
+      name: "jkbms200 Delta Cell Voltage"
+    average_cell_voltage:
+      name: "jkbms200 Average Cell Voltage"
+    total_voltage:
+      name: "jkbms200 Total Voltage"
+    current:
+      name: "jkbms200 Current"
+    power:
+      name: "jkbms200 Power"
+    charging_power:
+      name: "jkbms200 Charging Power"
+    discharging_power:
+      name: "jkbms200 Discharging Power"
+    temperature_sensor_1:
+      name: "jkbms200 Temperature Sensor 1"
+    temperature_sensor_2:
+      name: "jkbms200 Temperature Sensor 2"
+    power_tube_temperature:
+      name: "jkbms200 MOSFET Temperature"
+    state_of_charge:
+      name: "jkbms200 State of Charge"
+    capacity_remaining:
+      name: "jkbms200 Capacity Remaining"
+    charging_cycles:
+      name: "jkbms200 Charging Cycles"
+    balancing_current:
+      name: "jkbms200 Balancing Current"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: bms300
+    min_cell_voltage:
+      name: "jkbms300 Min Cell Voltage"
+    max_cell_voltage:
+      name: "jkbms300 Max Cell Voltage"
+    delta_cell_voltage:
+      name: "jkbms300 Delta Cell Voltage"
+    average_cell_voltage:
+      name: "jkbms300 Average Cell Voltage"
+    total_voltage:
+      name: "jkbms300 Total Voltage"
+    current:
+      name: "jkbms300 Current"
+    power:
+      name: "jkbms300 Power"
+    charging_power:
+      name: "jkbms300 Charging Power"
+    discharging_power:
+      name: "jkbms300 Discharging Power"
+    temperature_sensor_1:
+      name: "jkbms300 Temperature Sensor 1"
+    temperature_sensor_2:
+      name: "jkbms300 Temperature Sensor 2"
+    power_tube_temperature:
+      name: "jkbms300 MOSFET Temperature"
+    state_of_charge:
+      name: "jkbms300 State of Charge"
+    capacity_remaining:
+      name: "jkbms300 Capacity Remaining"
+    charging_cycles:
+      name: "jkbms300 Charging Cycles"
+    balancing_current:
+      name: "jkbms300 Balancing Current"
+
+switch:
+  - platform: jk_bms_ble
+    jk_bms_ble_id: bms200
+    charging:
+      name: "jkbms200 Charging Switch"
+    discharging:
+      name: "jkbms200 Discharging Switch"
+    balancer:
+      name: "jkbms200 Balancer Switch"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: bms300
+    charging:
+      name: "jkbms300 Charging Switch"
+    discharging:
+      name: "jkbms300 Discharging Switch"
+    balancer:
+      name: "jkbms300 Balancer Switch"
+
+text_sensor:
+  - platform: jk_bms_ble
+    jk_bms_ble_id: bms200
+    errors:
+      name: "jkbms200 Errors"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: bms300
+    errors:
+      name: "jkbms300 Errors"

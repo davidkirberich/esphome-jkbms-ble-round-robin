@@ -1,0 +1,161 @@
+import copy
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class ValidatedLoader(yaml.SafeLoader):
+    pass
+
+
+ValidatedLoader.add_constructor(
+    "!lambda", lambda loader, node: loader.construct_scalar(node)
+)
+
+
+def load_example(path: Path) -> dict:
+    class Loader(yaml.SafeLoader):
+        pass
+
+    def include(loader: Loader, node: yaml.ScalarNode) -> dict:
+        return load_example(path.parent / loader.construct_scalar(node))
+
+    def secret(loader: Loader, node: yaml.ScalarNode) -> str:
+        name = loader.construct_scalar(node)
+        if name in ("bms200_mac_address", "bms300_mac_address"):
+            return {"bms200_mac_address": "AA:BB:CC:DD:EE:01",
+                    "bms300_mac_address": "AA:BB:CC:DD:EE:02"}[name]
+        if name.endswith("_mac_address"):
+            index = int(name.removeprefix("bms").removesuffix("_mac_address"))
+            return f"AA:BB:CC:DD:EE:{index:02X}"
+        return {
+            "wifi_ssid": "test-network",
+            "wifi_password": "test-password",
+            "wifi_backup_ssid": "test-backup",
+            "wifi_backup_password": "test-backup-password",
+        }[name]
+
+    Loader.add_constructor("!include", include)
+    Loader.add_constructor("!secret", secret)
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=Loader)
+
+
+class ConfigurationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.workspace = tempfile.TemporaryDirectory()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.workspace.cleanup()
+
+    def validate(self, config: dict) -> tuple[dict, str]:
+        directory = Path(self.workspace.name)
+        path = directory / "test.yaml"
+        path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+        results = []
+        for arguments in (["config"], ["compile", "--only-generate"]):
+            result = subprocess.run(
+                [sys.executable, "-m", "esphome", *arguments, str(path)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env={**os.environ, "PYTHONUTF8": "1"},
+                timeout=120,
+            )
+            self.assertEqual(
+                result.returncode, 0, result.stdout + result.stderr
+            )
+            results.append(result.stdout)
+        source = (
+            directory
+            / ".esphome"
+            / "build"
+            / config["substitutions"]["name"]
+            / "src"
+            / "main.cpp"
+        ).read_text(encoding="utf-8")
+        return yaml.load(results[0], Loader=ValidatedLoader), source
+
+    def test_two_bms_example(self) -> None:
+        config, source = self.validate(load_example(ROOT / "examples" / "two-bms.yaml"))
+        self.assertEqual(config["esp32_ble"]["max_connections"], 2)
+        self.assertIn("% rr_clients->value().size()", source)
+
+    def test_existing_gateway(self) -> None:
+        config = load_example(ROOT / "examples" / "jk-bms-gateway.yaml")
+        config["packages"]["round_robin"] = load_example(
+            ROOT / "packages" / "round_robin.yaml"
+        )
+        validated, source = self.validate(config)
+        self.assertEqual(validated["esphome"]["name"], "jk-bms-gateway")
+        self.assertEqual(len(validated["wifi"]["networks"]), 2)
+        self.assertEqual(len(validated["sensor"]), 2)
+        self.assertEqual(len(validated["switch"]), 2)
+        self.assertIn("client_200, client_300", source)
+
+    def test_three_four_and_five_bms(self) -> None:
+        example = load_example(ROOT / "examples" / "five-bms.yaml")
+        for count in (3, 4, 5):
+            with self.subTest(count=count):
+                config = copy.deepcopy(example)
+                config["substitutions"]["rr_bms"] = config["substitutions"]["rr_bms"][:count]
+                for key in ("ble_client", "jk_bms_ble", "binary_sensor"):
+                    config[key] = config[key][:count]
+                validated, source = self.validate(config)
+                self.assertEqual(validated["esp32_ble"]["max_connections"], count)
+                self.assertEqual(len(validated["ble_client"]), count)
+                self.assertEqual(len(validated["binary_sensor"]), count)
+                self.assertIn(f"rr_client_bms{count}", source)
+                self.assertNotIn(f"rr_client_bms{count + 1}", source)
+                expected_clients = ", ".join(
+                    f"rr_client_bms{index}" for index in range(1, count + 1)
+                )
+                self.assertIn(
+                    f"rr_clients->value() = {{{expected_clients}}};", source
+                )
+
+    def test_custom_timing(self) -> None:
+        config = load_example(ROOT / "examples" / "five-bms.yaml")
+        config["substitutions"].update(
+            rr_cycle_ms="23000",
+            rr_min_dwell_ms="37000",
+            rr_check_interval="2s",
+            rr_disconnect_timeout="7s",
+            bms_throttle="3s",
+        )
+        validated, source = self.validate(config)
+        self.assertEqual(validated["interval"][0]["interval"], "2s")
+        self.assertTrue(all(bms["throttle"] == "3s" for bms in validated["jk_bms_ble"]))
+        self.assertIn("elapsed < 23000", source)
+        self.assertIn("elapsed >= 37000", source)
+        self.assertRegex(
+            source, re.compile(r"set_timeout_value\(.*?return 7000;", re.DOTALL)
+        )
+
+    def test_package_timing_defaults(self) -> None:
+        config = load_example(ROOT / "examples" / "two-bms.yaml")
+        for setting in (
+            "rr_cycle_ms", "rr_min_dwell_ms", "rr_check_interval", "rr_disconnect_timeout"
+        ):
+            del config["substitutions"][setting]
+        validated, source = self.validate(config)
+        self.assertEqual(validated["interval"][0]["interval"], "5s")
+        self.assertIn("elapsed < 60000", source)
+        self.assertIn("elapsed >= 10000", source)
+        self.assertRegex(
+            source, re.compile(r"set_timeout_value\(.*?return 10000;", re.DOTALL)
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

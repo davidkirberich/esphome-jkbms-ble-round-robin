@@ -1,6 +1,7 @@
 # ESPHome build files and caches
 .esphome/
 .pio/
+__pycache__/
 
 # Secrets (Zwingend erforderlich, um Passwörter und MAC-Adressen nicht zu leaken)
 secrets.yaml

@@ -1,0 +1,113 @@
+substitutions:
+  name: jk-bms-round-robin
+  protocol_version: JK02_32S
+  rr_bms:
+    - client: rr_client_bms1
+      online: rr_bms1_online
+    - client: rr_client_bms2
+      online: rr_bms2_online
+    - client: rr_client_bms3
+      online: rr_bms3_online
+    - client: rr_client_bms4
+      online: rr_bms4_online
+    - client: rr_client_bms5
+      online: rr_bms5_online
+  rr_cycle_ms: "60000"
+  rr_min_dwell_ms: "10000"
+  rr_check_interval: 5s
+  rr_disconnect_timeout: 10s
+  bms_throttle: 5s
+
+esphome:
+  name: ${name}
+  friendly_name: ${name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+external_components:
+  - source: github://syssi/esphome-jk-bms@main
+
+packages:
+  round_robin: !include ../packages/round_robin.yaml
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+  level: INFO
+
+api:
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: false
+
+ble_client:
+  - mac_address: !secret bms1_mac_address
+    id: rr_client_bms1
+    auto_connect: false
+  - mac_address: !secret bms2_mac_address
+    id: rr_client_bms2
+    auto_connect: false
+  - mac_address: !secret bms3_mac_address
+    id: rr_client_bms3
+    auto_connect: false
+  - mac_address: !secret bms4_mac_address
+    id: rr_client_bms4
+    auto_connect: false
+  - mac_address: !secret bms5_mac_address
+    id: rr_client_bms5
+    auto_connect: false
+
+jk_bms_ble:
+  - ble_client_id: rr_client_bms1
+    protocol_version: ${protocol_version}
+    throttle: ${bms_throttle}
+    id: rr_bms1
+  - ble_client_id: rr_client_bms2
+    protocol_version: ${protocol_version}
+    throttle: ${bms_throttle}
+    id: rr_bms2
+  - ble_client_id: rr_client_bms3
+    protocol_version: ${protocol_version}
+    throttle: ${bms_throttle}
+    id: rr_bms3
+  - ble_client_id: rr_client_bms4
+    protocol_version: ${protocol_version}
+    throttle: ${bms_throttle}
+    id: rr_bms4
+  - ble_client_id: rr_client_bms5
+    protocol_version: ${protocol_version}
+    throttle: ${bms_throttle}
+    id: rr_bms5
+
+binary_sensor:
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms1
+    online_status:
+      id: rr_bms1_online
+      name: "BMS 1 Online"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms2
+    online_status:
+      id: rr_bms2_online
+      name: "BMS 2 Online"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms3
+    online_status:
+      id: rr_bms3_online
+      name: "BMS 3 Online"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms4
+    online_status:
+      id: rr_bms4_online
+      name: "BMS 4 Online"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms5
+    online_status:
+      id: rr_bms5_online
+      name: "BMS 5 Online"

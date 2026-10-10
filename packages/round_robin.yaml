@@ -1,0 +1,160 @@
+substitutions:
+  rr_cycle_ms: "60000"
+  rr_min_dwell_ms: "10000"
+  rr_check_interval: 5s
+  rr_disconnect_timeout: 10s
+
+esp32_ble:
+  max_connections: ${len(rr_bms)}
+
+globals:
+  - id: rr_clients
+    type: std::vector<esphome::ble_client::BLEClient *>
+    restore_value: no
+  - id: rr_online_sensors
+    type: std::vector<esphome::binary_sensor::BinarySensor *>
+    restore_value: no
+  - id: rr_active_index
+    type: size_t
+    restore_value: no
+    initial_value: "0"
+  - id: rr_next_index
+    type: size_t
+    restore_value: no
+    initial_value: "0"
+  - id: rr_connect_start_time
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: rr_connection_enabled
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: rr_suspended
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: rr_configuration_valid
+    type: bool
+    restore_value: no
+    initial_value: "true"
+
+esphome:
+  min_version: 2026.9.0
+  on_boot:
+    priority: -10
+    then:
+      - lambda: |-
+          static_assert(${len(rr_bms)} > 0, "rr_bms must not be empty");
+          static_assert(${rr_cycle_ms} > 0 && ${rr_cycle_ms} <= 2147483647,
+                        "rr_cycle_ms must be between 1 and 2147483647");
+          static_assert(${rr_min_dwell_ms} >= 0 && ${rr_min_dwell_ms} <= 2147483647,
+                        "rr_min_dwell_ms must be between 0 and 2147483647");
+          id(rr_clients) = {id(${rr_bms | map(attribute='client') | join('), id(')})};
+          id(rr_online_sensors) = {id(${rr_bms | map(attribute='online') | join('), id(')})};
+          for (size_t i = 0; i < id(rr_clients).size(); ++i) {
+            for (size_t j = 0; j < i; ++j) {
+              if (id(rr_clients)[i] == id(rr_clients)[j] ||
+                  id(rr_online_sensors)[i] == id(rr_online_sensors)[j]) {
+                ESP_LOGE("round_robin", "Duplicate client or online sensor in rr_bms; scheduler suspended");
+                id(rr_configuration_valid) = false;
+              }
+            }
+            id(rr_clients)[i]->set_enabled(false);
+            id(rr_clients)[i]->set_auto_connect(true);
+          }
+      - script.execute: rr_switch_connection
+
+script:
+  - id: rr_switch_connection
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: "return !id(rr_suspended) && id(rr_configuration_valid);"
+          then:
+            - lambda: |-
+                id(rr_connection_enabled) = false;
+                for (auto *client : id(rr_clients)) {
+                  client->set_enabled(false);
+                }
+            - wait_until:
+                condition:
+                  lambda: |-
+                    for (auto *client : id(rr_clients)) {
+                      if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
+                        return false;
+                      }
+                    }
+                    return true;
+                timeout: ${rr_disconnect_timeout}
+            - if:
+                condition:
+                  lambda: |-
+                    for (auto *client : id(rr_clients)) {
+                      if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
+                        return false;
+                      }
+                    }
+                    return !id(rr_suspended);
+                then:
+                  - lambda: |-
+                      id(rr_active_index) = id(rr_next_index);
+                      id(rr_connect_start_time) = millis();
+                      id(rr_clients)[id(rr_active_index)]->set_enabled(true);
+                      id(rr_connection_enabled) = true;
+                      id(rr_next_index) = (id(rr_active_index) + 1) % id(rr_clients).size();
+                      ESP_LOGI("round_robin", "Enabling BMS %u of %u",
+                               static_cast<unsigned>(id(rr_active_index) + 1),
+                               static_cast<unsigned>(id(rr_clients).size()));
+                else:
+                  - logger.log:
+                      level: ERROR
+                      tag: round_robin
+                      format: "BLE disconnect timed out; all clients remain disabled, retrying on next check"
+
+interval:
+  - interval: ${rr_check_interval}
+    then:
+      - if:
+          condition:
+            and:
+              - not:
+                  script.is_running: rr_switch_connection
+              - lambda: |-
+                  if (id(rr_suspended) || !id(rr_configuration_valid) || id(rr_clients).empty()) {
+                    return false;
+                  }
+                  if (!id(rr_connection_enabled)) {
+                    return true;
+                  }
+                  const uint32_t elapsed = millis() - id(rr_connect_start_time);
+                  if (elapsed < ${rr_cycle_ms}) {
+                    return false;
+                  }
+                  auto *online = id(rr_online_sensors)[id(rr_active_index)];
+                  return !online->has_state() || !online->state ||
+                         elapsed >= ${rr_min_dwell_ms};
+          then:
+            - script.execute: rr_switch_connection
+
+ota:
+  - platform: esphome
+    on_begin:
+      then:
+        - lambda: "id(rr_suspended) = true;"
+        - script.stop: rr_switch_connection
+        - lambda: |-
+            id(rr_next_index) = id(rr_active_index);
+            id(rr_connection_enabled) = false;
+            for (auto *client : id(rr_clients)) {
+              client->set_enabled(false);
+            }
+        - logger.log: "BLE round robin suspended for OTA update"
+    on_error:
+      then:
+        - lambda: "id(rr_suspended) = false;"
+        - logger.log:
+            level: WARN
+            tag: round_robin
+            format: "OTA failed; BLE round robin will resume on next check"
