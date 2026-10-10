@@ -22,9 +22,15 @@ and entities; do not duplicate that component.
 - Keep at most one managed BLE client enabled. Disable all managed clients and
   wait for their actual `IDLE` states before enabling the next client.
 - On disconnect timeout, log an error and retry without enabling another
-  client. An offline BMS must not block subsequent devices indefinitely.
+  client. With experimental BLE reset enabled, escalate repeated timeouts to
+  bounded full-stack recovery. An offline BMS must not block subsequent devices
+  indefinitely.
+- Keep BLE recovery attempts bounded, respect ESPHome's failed-component state,
+  and require an active host plus all clients IDLE before enabling any BMS.
+  Automatic gateway reboot is opt-in and must warn about lost RAM state.
 - Prevent concurrent scheduler executions and pause connection attempts during
-  OTA. Resume monitoring after an OTA error.
+  OTA. Stop both handover and recovery scripts; preserve pending BLE recovery
+  across an OTA error before resuming monitoring.
 - Require `auto_connect: false` in managed client declarations to prevent
   connection races at boot. Do not expose controls that bypass the scheduler.
 - Keep timing configurable in device YAML. `rr_cycle_s` and `rr_min_dwell_s`

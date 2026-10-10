@@ -58,7 +58,9 @@ the connection scheduler, not a replacement for that component.
   checks the states again before enabling the next client. This is a settling
   period, not a guarantee that ESP-IDF HCI errors are eliminated.
 - Enables only the next client. If the disconnect timeout expires, it logs an
-  error, leaves all clients disabled, and retries on the next scheduler check.
+  error and leaves all clients disabled. With experimental BLE reset enabled,
+  repeated disconnect timeouts trigger bounded stack recovery; otherwise the
+  scheduler retries the disconnect on the next check.
 - Gives each BMS its configured cycle time. An offline BMS still loses its
   turn after that time, so it cannot block monitoring of the others.
 - If the active BMS is online, also observes the configured minimum dwell time,
@@ -102,6 +104,13 @@ The gateway example uses 90-second turns for both BMS instead of the package's
 60-second default, allowing more time for a slower handshake and data transfer.
 It keeps BMS 300 in the normal rotation. The handover delay defaults to one
 second. Both values are configurable.
+
+The gateway currently enables experimental full BLE-stack restart at each
+handover. It affects **all BLE functions** on the gateway, not just the BMS
+clients. Hardware logs showed successful handovers without the previous HCI
+fragment warnings, but this is not proof of an ESP-IDF root-cause fix or
+long-term stability. Restart can block ESPHome's main loop for about one second.
+Generic examples leave this option disabled.
 
 All examples pin syssi's component to a previously validated commit instead of
 following `main`, so BLE tests use reproducible upstream code. UART logging is
@@ -211,6 +220,13 @@ measurement publications; only actual valid updates are forwarded.
 | `rr_check_interval` | `5s` | Scheduler evaluation interval; positive ESPHome duration |
 | `rr_disconnect_timeout` | `10s` | Maximum wait for all clients to become idle; positive ESPHome duration |
 | `rr_handover_delay` | `1s` | Additional settling time after an idle check, before rechecking and enabling the next client |
+| `rr_reset_ble_on_handover` | `"false"` | Experimental full BLE restart on each handover; also enables recovery after repeated disconnect timeouts |
+| `rr_ble_restart_timeout` | `15s` | Maximum wait for each BLE shutdown or startup phase |
+| `rr_ble_off_delay` | `1s` | Wait between confirmed BLE shutdown and startup |
+| `rr_disconnect_failures_before_recovery` | `"2"` | Consecutive disconnect timeouts before full BLE recovery when experimental reset is enabled; integer 1..100 |
+| `rr_ble_recovery_attempts` | `"2"` | Maximum full-stack restart attempts per handover, including the first attempt; integer 1..10 |
+| `rr_ble_recovery_delay` | `5s` | Pause before another restart attempt after failure |
+| `rr_reboot_on_recovery_failure` | `"false"` | Reboot the gateway as a last resort if BLE recovery is exhausted or the BLE component is marked failed |
 | `bms_throttle` | `5s` | Upstream JK-BMS update throttle used by the examples |
 
 The package supplies defaults for all `rr_` timing settings; override them in
@@ -228,6 +244,45 @@ These settings control this package and the example's update throttle. Internal
 BLE/protocol timeouts in ESPHome and the upstream JK-BMS component are not
 changed by this package. Firmware compilation and hardware testing are required
 before deploying a changed device count or timing configuration.
+
+## BLE recovery and long-term diagnostics
+
+Recovery never enables another BMS until the BLE host is active, the BLE
+component is not marked failed, and **all managed clients are IDLE**. A successful
+restart ends the retry sequence immediately; the round-robin index advances only
+when the next client is actually enabled. A stalled disconnect may be escalated
+to full-stack recovery without reaching IDLE first, but all clients remain
+disabled throughout the recovery.
+
+With gateway defaults, two consecutive disconnect timeouts trigger recovery.
+Each full-stack restart gets up to two attempts, separated by five seconds.
+Shutdown and startup each have their own 15-second timeout. This does not bound
+blocking inside ESPHome/ESP-IDF itself. If ESPHome marks its BLE component failed,
+normal BLE actions cannot revive it; further stack attempts are skipped rather
+than clearing that failure flag.
+
+If recovery fails, the scheduler suspends and logs an ERROR. Automatic gateway
+reboot is disabled by default; reboot manually in that case, or explicitly set
+`rr_reboot_on_recovery_failure: "true"`. Enabling it can cause repeated reboots
+under a persistent fault. A reboot interrupts the Home Assistant API connection
+and loses retained BMS values and diagnostic counters stored in RAM.
+
+OTA stops both handover and restart scripts. If OTA fails during a BLE restart,
+the pending recovery state is retained so monitoring first restores BLE before
+enabling a client. An unavailable BLE host also requires recovery before a
+handover, even if periodic stack restart is disabled.
+
+The gateway adds diagnostics at `rr_diagnostics_interval` (default `30s`):
+uptime, free heap, largest free heap block, disconnect timeout count, BLE restart
+attempt count, and BLE restart failure count. Attempts include normal successful
+handover restarts, not only recovery retries; failures count individual failed
+attempts. Counters reset on boot. An interrupted attempt during OTA is not counted
+as a failure. Compare heap readings at similar phases over a 24-48 hour test with
+both BMS; transient memory fluctuations alone are not evidence of a leak.
+
+The recovery changes require firmware compilation and hardware verification in
+ESPHome Device Builder. Source inspection or configuration tests cannot verify
+real BLE timeout recovery.
 
 ## Configuration tests
 

@@ -17,6 +17,11 @@ substitutions:
   rr_reset_ble_on_handover: "true"
   rr_ble_restart_timeout: 15s
   rr_ble_off_delay: 1s
+  rr_disconnect_failures_before_recovery: "2"
+  rr_ble_recovery_attempts: "2"
+  rr_ble_recovery_delay: 5s
+  rr_reboot_on_recovery_failure: "false"
+  rr_diagnostics_interval: 30s
   bms_throttle: 5s
 
 packages:
@@ -66,6 +71,9 @@ logger:
     esp32_ble_client: INFO
 
 api:
+
+debug:
+  update_interval: ${rr_diagnostics_interval}
 
 esp32_ble_tracker:
   scan_parameters:
@@ -152,6 +160,36 @@ button:
                 format: "Manual handover ignored: scheduler suspended, invalid configuration or handover in progress"
 
 sensor:
+  - platform: uptime
+    name: "Gateway Uptime"
+    entity_category: diagnostic
+    update_interval: ${rr_diagnostics_interval}
+  - platform: debug
+    free:
+      name: "Gateway Free Heap"
+    block:
+      name: "Gateway Largest Free Heap Block"
+  - platform: template
+    name: "BLE Disconnect Timeouts"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    state_class: total_increasing
+    update_interval: ${rr_diagnostics_interval}
+    lambda: "return id(rr_disconnect_timeouts);"
+  - platform: template
+    name: "BLE Restart Attempts"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    state_class: total_increasing
+    update_interval: ${rr_diagnostics_interval}
+    lambda: "return id(rr_ble_restart_attempts);"
+  - platform: template
+    name: "BLE Restart Failures"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    state_class: total_increasing
+    update_interval: ${rr_diagnostics_interval}
+    lambda: "return id(rr_ble_restart_failures);"
   - platform: jk_bms_ble
     jk_bms_ble_id: bms200
     min_cell_voltage:

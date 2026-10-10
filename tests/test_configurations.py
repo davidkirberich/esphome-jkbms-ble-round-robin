@@ -100,8 +100,17 @@ class ConfigurationTests(unittest.TestCase):
         validated, source = self.validate(config)
         self.assertEqual(validated["esphome"]["name"], "jk-bms-gateway")
         self.assertEqual(len(validated["wifi"]["networks"]), 2)
-        self.assertEqual(len(validated["sensor"]), 4)
+        self.assertEqual(len(validated["sensor"]), 9)
         self.assertEqual(len(validated["switch"]), 2)
+        self.assertEqual(validated["debug"]["update_interval"], "30s")
+        diagnostics = {
+            sensor["name"] for sensor in validated["sensor"]
+            if sensor["platform"] in ("template", "uptime")
+        }
+        self.assertTrue({
+            "Gateway Uptime", "BLE Disconnect Timeouts",
+            "BLE Restart Attempts", "BLE Restart Failures",
+        }.issubset(diagnostics))
         self.assertIn("client_200, client_300", source)
 
     def test_three_four_and_five_bms(self) -> None:
@@ -192,7 +201,7 @@ class ConfigurationTests(unittest.TestCase):
                     self.assertIn(f"id(rr_last_data_us)[{index}] = esp_timer_get_time()", update)
                 ages = [
                     sensor for sensor in validated["sensor"]
-                    if sensor["platform"] == "template"
+                    if sensor["platform"] == "template" and sensor["name"].endswith(" Data Age")
                 ]
                 self.assertEqual(len(ages), count)
                 for index, age in enumerate(ages):
@@ -208,14 +217,72 @@ class ConfigurationTests(unittest.TestCase):
         package = load_example(ROOT / "packages" / "round_robin.yaml")
         actions = package["script"][0]["then"][0]["if"]["then"]
         self.assertIn("wait_until", actions[1])
-        branch = actions[2]["if"]
-        self.assertEqual(branch["then"][0]["delay"], "${rr_handover_delay}")
-        enable = branch["then"][1]["lambda"]
+        self.assertIn("rr_disconnect_timeouts", actions[2]["lambda"])
+        branch = actions[3]["if"]
+        self.assertIn("rr_disconnect_failures_before_recovery", branch["condition"]["lambda"])
+        restart = branch["then"][0]["if"]["then"]
+        self.assertEqual(restart[0]["script.execute"], "rr_restart_ble_stack")
+        self.assertEqual(restart[1]["script.wait"], "rr_restart_ble_stack")
+        self.assertEqual(branch["then"][1]["delay"], "${rr_handover_delay}")
+        enable = branch["then"][2]["lambda"]
         self.assertLess(enable.index("ClientState::IDLE"), enable.index("set_enabled(true)"))
+        self.assertLess(enable.index("is_active()"), enable.index("set_enabled(true)"))
         self.assertIn("id(rr_suspended)", enable)
         self.assertEqual(branch["else"][0]["logger.log"]["level"], "ERROR")
         ota_start = package["ota"][0]["on_begin"]["then"]
         self.assertEqual(ota_start[1]["script.stop"], "rr_switch_connection")
+        self.assertEqual(ota_start[2]["script.stop"], "rr_restart_ble_stack")
+        self.assertIn("rr_ble_recovery_required", actions[1]["wait_until"]["condition"]["lambda"])
+
+    def test_bounded_ble_recovery(self) -> None:
+        package = load_example(ROOT / "packages" / "round_robin.yaml")
+        recovery = package["script"][1]["then"]
+        repeat = recovery[1]["repeat"]
+        self.assertEqual(repeat["count"], "${rr_ble_recovery_attempts}")
+        attempt = repeat["then"][0]["if"]
+        self.assertIn("!id(rr_ble_restart_ready)", attempt["condition"]["lambda"])
+        self.assertIn("is_failed()", attempt["condition"]["lambda"])
+        retry_delay = attempt["then"][0]["if"]
+        self.assertIn("rr_ble_recovery_attempt) > 0", retry_delay["condition"]["lambda"])
+        self.assertEqual(retry_delay["then"][0]["delay"], "${rr_ble_recovery_delay}")
+        self.assertIn("ble.disable", attempt["then"][2])
+        self.assertEqual(attempt["then"][3]["wait_until"]["timeout"], "${rr_ble_restart_timeout}")
+        startup = attempt["then"][4]["if"]["then"]
+        self.assertEqual(startup[0]["delay"], "${rr_ble_off_delay}")
+        self.assertIn("ble.enable", startup[1])
+        self.assertEqual(startup[2]["wait_until"]["timeout"], "${rr_ble_restart_timeout}")
+        self.assertIn("ClientState::IDLE", startup[3]["lambda"])
+        self.assertIn("id(rr_ble_recovery_required) = false", startup[3]["lambda"])
+        exhausted = recovery[2]["if"]["then"]
+        self.assertIn("id(rr_suspended) = true", exhausted[0]["lambda"])
+        reboot = exhausted[1]["if"]
+        self.assertEqual(reboot["condition"]["lambda"], "return ${rr_reboot_on_recovery_failure};")
+        self.assertEqual(reboot["then"][1]["button.press"], "rr_reboot_gateway")
+        self.assertEqual(package["substitutions"]["rr_reboot_on_recovery_failure"], "false")
+        self.assertTrue(package["button"][0]["internal"])
+
+    def test_custom_ble_recovery_timing(self) -> None:
+        config = load_example(ROOT / "examples" / "two-bms.yaml")
+        config["substitutions"].update(
+            rr_reset_ble_on_handover="true",
+            rr_disconnect_failures_before_recovery="3",
+            rr_ble_recovery_attempts="3",
+            rr_ble_recovery_delay="7s",
+            rr_ble_restart_timeout="11s",
+            rr_ble_off_delay="2s",
+            rr_reboot_on_recovery_failure="true",
+        )
+        validated, source = self.validate(config)
+        recovery = validated["script"][1]["then"][1]["repeat"]
+        self.assertEqual(recovery["count"], 3)
+        self.assertIn("rr_disconnect_failures->value() >= 3", source)
+        for duration in (7000, 2000):
+            self.assertRegex(
+                source, re.compile(rf"set_delay\(.*?return {duration};", re.DOTALL)
+            )
+        self.assertRegex(
+            source, re.compile(r"set_timeout_value\(.*?return 11000;", re.DOTALL)
+        )
 
 
 if __name__ == "__main__":

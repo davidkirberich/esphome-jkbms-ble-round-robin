@@ -7,11 +7,43 @@ substitutions:
   rr_reset_ble_on_handover: "false"
   rr_ble_restart_timeout: 15s
   rr_ble_off_delay: 1s
+  rr_disconnect_failures_before_recovery: "2"
+  rr_ble_recovery_attempts: "2"
+  rr_ble_recovery_delay: 5s
+  rr_reboot_on_recovery_failure: "false"
 
 esp32_ble:
   max_connections: ${len(rr_bms)}
 
 globals:
+  - id: rr_disconnect_failures
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: rr_disconnect_timeouts
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: rr_ble_restart_attempts
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: rr_ble_restart_failures
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: rr_ble_recovery_required
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: rr_ble_restart_ready
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: rr_ble_recovery_attempt
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
   - id: rr_last_data_us
     type: std::vector<int64_t>
     restore_value: no
@@ -61,6 +93,11 @@ esphome:
                         "rr_cycle_s must be between 1 and 2147483");
           static_assert(${rr_min_dwell_s} >= 0 && ${rr_min_dwell_s} <= 2147483,
                         "rr_min_dwell_s must be between 0 and 2147483");
+          static_assert(${rr_disconnect_failures_before_recovery} > 0 &&
+                        ${rr_disconnect_failures_before_recovery} <= 100,
+                        "rr_disconnect_failures_before_recovery must be between 1 and 100");
+          static_assert(${rr_ble_recovery_attempts} > 0 && ${rr_ble_recovery_attempts} <= 10,
+                        "rr_ble_recovery_attempts must be between 1 and 10");
           id(rr_clients) = {id(${rr_bms | map(attribute='client') | join('), id(')})};
           id(rr_online_sensors) = {id(${rr_bms | map(attribute='online') | join('), id(')})};
           for (size_t i = 0; i < id(rr_clients).size(); ++i) {
@@ -89,9 +126,17 @@ script:
                 for (auto *client : id(rr_clients)) {
                   client->set_enabled(false);
                 }
+                if (!esphome::esp32_ble::global_ble->is_active() ||
+                    esphome::esp32_ble::global_ble->is_failed()) {
+                  id(rr_ble_recovery_required) = true;
+                  ESP_LOGW("round_robin", "BLE unavailable at handover; recovering before connecting another BMS");
+                }
             - wait_until:
                 condition:
                   lambda: |-
+                    if (id(rr_ble_recovery_required)) {
+                      return true;
+                    }
                     for (auto *client : id(rr_clients)) {
                       if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
                         return false;
@@ -99,25 +144,55 @@ script:
                     }
                     return true;
                 timeout: ${rr_disconnect_timeout}
+            - lambda: |-
+                if (id(rr_ble_recovery_required)) {
+                  return;
+                }
+                for (auto *client : id(rr_clients)) {
+                  if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
+                    ++id(rr_disconnect_timeouts);
+                    if (id(rr_disconnect_failures) < ${rr_disconnect_failures_before_recovery}) {
+                      ++id(rr_disconnect_failures);
+                    }
+                    ESP_LOGE("round_robin", "BLE disconnect timed out (%u consecutive); all clients remain disabled",
+                             static_cast<unsigned>(id(rr_disconnect_failures)));
+                    return;
+                  }
+                }
+                id(rr_disconnect_failures) = 0;
             - if:
                 condition:
                   lambda: |-
+                    if (id(rr_suspended)) {
+                      return false;
+                    }
+                    if (id(rr_ble_recovery_required) ||
+                        (${rr_reset_ble_on_handover} &&
+                         id(rr_disconnect_failures) >= ${rr_disconnect_failures_before_recovery})) {
+                      return true;
+                    }
                     for (auto *client : id(rr_clients)) {
                       if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
                         return false;
                       }
                     }
-                    return !id(rr_suspended);
+                    return true;
                 then:
                   - if:
                       condition:
-                        lambda: "return ${rr_reset_ble_on_handover};"
+                        lambda: "return ${rr_reset_ble_on_handover} || id(rr_ble_recovery_required);"
                       then:
                         - script.execute: rr_restart_ble_stack
                         - script.wait: rr_restart_ble_stack
                   - delay: ${rr_handover_delay}
                   - lambda: |-
                       if (id(rr_suspended)) {
+                        return;
+                      }
+                      if (!esphome::esp32_ble::global_ble->is_active() ||
+                          esphome::esp32_ble::global_ble->is_failed()) {
+                        id(rr_ble_recovery_required) = true;
+                        ESP_LOGE("round_robin", "BLE unavailable after handover; recovery required before enabling a client");
                         return;
                       }
                       for (auto *client : id(rr_clients)) {
@@ -138,71 +213,118 @@ script:
                   - logger.log:
                       level: ERROR
                       tag: round_robin
-                      format: "BLE disconnect timed out; all clients remain disabled, retrying on next check"
+                      format: "Handover deferred; all clients remain disabled, retrying on next check"
 
   - id: rr_restart_ble_stack
     mode: single
     then:
-      - logger.log:
-          tag: round_robin
-          format: "Experimental handover: stopping entire BLE stack"
-      - ble.disable:
-      - wait_until:
-          condition:
-            lambda: |-
-              return esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED &&
-                     esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE;
-          timeout: ${rr_ble_restart_timeout}
-      - if:
-          condition:
-            lambda: |-
-              return !id(rr_suspended) &&
-                     esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED &&
-                     esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE;
+      - lambda: |-
+          id(rr_ble_recovery_required) = true;
+          id(rr_ble_restart_ready) = false;
+          id(rr_ble_recovery_attempt) = 0;
+          for (auto *client : id(rr_clients)) {
+            client->set_enabled(false);
+          }
+      - repeat:
+          count: ${rr_ble_recovery_attempts}
           then:
-            - delay: ${rr_ble_off_delay}
-            - ble.enable:
-            - wait_until:
-                condition:
-                  lambda: |-
-                    if (!esphome::esp32_ble::global_ble->is_active()) {
-                      return false;
-                    }
-                    for (auto *client : id(rr_clients)) {
-                      if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
-                        return false;
-                      }
-                    }
-                    return true;
-                timeout: ${rr_ble_restart_timeout}
             - if:
                 condition:
                   lambda: |-
-                    if (!esphome::esp32_ble::global_ble->is_active()) {
-                      return false;
-                    }
-                    for (auto *client : id(rr_clients)) {
-                      if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
-                        return false;
-                      }
-                    }
-                    return true;
+                    return !id(rr_suspended) && !id(rr_ble_restart_ready) &&
+                           !esphome::esp32_ble::global_ble->is_failed();
                 then:
-                  - logger.log:
-                      tag: round_robin
-                      format: "BLE stack restarted; all clients registered and idle"
-                else:
-                  - lambda: "id(rr_suspended) = true;"
+                  - if:
+                      condition:
+                        lambda: "return id(rr_ble_recovery_attempt) > 0;"
+                      then:
+                        - delay: ${rr_ble_recovery_delay}
+                  - lambda: |-
+                      ++id(rr_ble_recovery_attempt);
+                      ++id(rr_ble_restart_attempts);
+                      ESP_LOGI("round_robin", "Experimental BLE restart attempt %u of %u",
+                               static_cast<unsigned>(id(rr_ble_recovery_attempt)),
+                               static_cast<unsigned>(${rr_ble_recovery_attempts}));
+                  - ble.disable:
+                  - wait_until:
+                      condition:
+                        lambda: |-
+                          return esphome::esp32_ble::global_ble->is_failed() ||
+                                 (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED &&
+                                  esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE);
+                      timeout: ${rr_ble_restart_timeout}
+                  - if:
+                      condition:
+                        lambda: |-
+                          return !id(rr_suspended) &&
+                                 !esphome::esp32_ble::global_ble->is_failed() &&
+                                 esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED &&
+                                 esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE;
+                      then:
+                        - delay: ${rr_ble_off_delay}
+                        - ble.enable:
+                        - wait_until:
+                            condition:
+                              lambda: |-
+                                if (esphome::esp32_ble::global_ble->is_failed()) {
+                                  return true;
+                                }
+                                if (!esphome::esp32_ble::global_ble->is_active()) {
+                                  return false;
+                                }
+                                for (auto *client : id(rr_clients)) {
+                                  if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
+                                    return false;
+                                  }
+                                }
+                                return true;
+                            timeout: ${rr_ble_restart_timeout}
+                        - lambda: |-
+                            if (id(rr_suspended) ||
+                                esphome::esp32_ble::global_ble->is_failed() ||
+                                !esphome::esp32_ble::global_ble->is_active()) {
+                              return;
+                            }
+                            for (auto *client : id(rr_clients)) {
+                              if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
+                                return;
+                              }
+                            }
+                            id(rr_ble_restart_ready) = true;
+                            id(rr_ble_recovery_required) = false;
+                            id(rr_disconnect_failures) = 0;
+                            ESP_LOGI("round_robin", "BLE stack restarted; all clients registered and idle");
+                  - lambda: |-
+                      if (!id(rr_ble_restart_ready)) {
+                        ++id(rr_ble_restart_failures);
+                        ESP_LOGE("round_robin", "BLE restart attempt failed; no BMS client will be enabled");
+                      }
+      - if:
+          condition:
+            lambda: "return !id(rr_suspended) && !id(rr_ble_restart_ready);"
+          then:
+            - lambda: |-
+                id(rr_suspended) = true;
+                ESP_LOGE("round_robin", "BLE recovery exhausted or BLE component failed; scheduler suspended");
+            - if:
+                condition:
+                  lambda: "return ${rr_reboot_on_recovery_failure};"
+                then:
                   - logger.log:
                       level: ERROR
                       tag: round_robin
-                      format: "BLE restart timed out; scheduler suspended, reboot gateway to recover"
-          else:
-            - lambda: "id(rr_suspended) = true;"
-            - logger.log:
-                level: ERROR
-                tag: round_robin
-                format: "BLE shutdown timed out; scheduler suspended, reboot gateway to recover"
+                      format: "Automatic gateway reboot enabled; rebooting after BLE recovery failure"
+                  - button.press: rr_reboot_gateway
+                else:
+                  - logger.log:
+                      level: ERROR
+                      tag: round_robin
+                      format: "Automatic reboot disabled; reboot gateway manually to recover"
+
+button:
+  - platform: restart
+    id: rr_reboot_gateway
+    internal: true
 
 interval:
   - interval: ${rr_check_interval}
