@@ -1,0 +1,15 @@
+# ESPHome build files and caches
+.esphome/
+.pio/
+
+# Secrets (Zwingend erforderlich, um Passwörter und MAC-Adressen nicht zu leaken)
+secrets.yaml
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
