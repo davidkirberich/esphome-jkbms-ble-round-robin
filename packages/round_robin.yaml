@@ -1,13 +1,18 @@
 substitutions:
-  rr_cycle_ms: "60000"
-  rr_min_dwell_ms: "10000"
+  rr_cycle_s: "60"
+  rr_min_dwell_s: "10"
   rr_check_interval: 5s
   rr_disconnect_timeout: 10s
+  rr_handover_delay: 1s
 
 esp32_ble:
   max_connections: ${len(rr_bms)}
 
 globals:
+  - id: rr_last_data_us
+    type: std::vector<int64_t>
+    restore_value: no
+    initial_value: "std::vector<int64_t>(${len(rr_bms)}, 0)"
   - id: rr_clients
     type: std::vector<esphome::ble_client::BLEClient *>
     restore_value: no
@@ -46,10 +51,10 @@ esphome:
     then:
       - lambda: |-
           static_assert(${len(rr_bms)} > 0, "rr_bms must not be empty");
-          static_assert(${rr_cycle_ms} > 0 && ${rr_cycle_ms} <= 2147483647,
-                        "rr_cycle_ms must be between 1 and 2147483647");
-          static_assert(${rr_min_dwell_ms} >= 0 && ${rr_min_dwell_ms} <= 2147483647,
-                        "rr_min_dwell_ms must be between 0 and 2147483647");
+          static_assert(${rr_cycle_s} > 0 && ${rr_cycle_s} <= 2147483,
+                        "rr_cycle_s must be between 1 and 2147483");
+          static_assert(${rr_min_dwell_s} >= 0 && ${rr_min_dwell_s} <= 2147483,
+                        "rr_min_dwell_s must be between 0 and 2147483");
           id(rr_clients) = {id(${rr_bms | map(attribute='client') | join('), id(')})};
           id(rr_online_sensors) = {id(${rr_bms | map(attribute='online') | join('), id(')})};
           for (size_t i = 0; i < id(rr_clients).size(); ++i) {
@@ -98,7 +103,17 @@ script:
                     }
                     return !id(rr_suspended);
                 then:
+                  - delay: ${rr_handover_delay}
                   - lambda: |-
+                      if (id(rr_suspended)) {
+                        return;
+                      }
+                      for (auto *client : id(rr_clients)) {
+                        if (client->state() != esphome::esp32_ble_tracker::ClientState::IDLE) {
+                          ESP_LOGE("round_robin", "BLE client left IDLE during handover delay; retrying on next check");
+                          return;
+                        }
+                      }
                       id(rr_active_index) = id(rr_next_index);
                       id(rr_connect_start_time) = millis();
                       id(rr_clients)[id(rr_active_index)]->set_enabled(true);
@@ -129,12 +144,12 @@ interval:
                     return true;
                   }
                   const uint32_t elapsed = millis() - id(rr_connect_start_time);
-                  if (elapsed < ${rr_cycle_ms}) {
+                  if (elapsed < ${rr_cycle_s} * 1000UL) {
                     return false;
                   }
                   auto *online = id(rr_online_sensors)[id(rr_active_index)];
                   return !online->has_state() || !online->state ||
-                         elapsed >= ${rr_min_dwell_ms};
+                         elapsed >= ${rr_min_dwell_s} * 1000UL;
           then:
             - script.execute: rr_switch_connection
 

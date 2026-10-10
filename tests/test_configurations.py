@@ -1,4 +1,5 @@
 import copy
+import math
 import os
 from pathlib import Path
 import re
@@ -99,7 +100,7 @@ class ConfigurationTests(unittest.TestCase):
         validated, source = self.validate(config)
         self.assertEqual(validated["esphome"]["name"], "jk-bms-gateway")
         self.assertEqual(len(validated["wifi"]["networks"]), 2)
-        self.assertEqual(len(validated["sensor"]), 2)
+        self.assertEqual(len(validated["sensor"]), 4)
         self.assertEqual(len(validated["switch"]), 2)
         self.assertIn("client_200, client_300", source)
 
@@ -111,10 +112,12 @@ class ConfigurationTests(unittest.TestCase):
                 config["substitutions"]["rr_bms"] = config["substitutions"]["rr_bms"][:count]
                 for key in ("ble_client", "jk_bms_ble", "binary_sensor"):
                     config[key] = config[key][:count]
+                config["sensor"] = config["sensor"][:count] + config["sensor"][5:5 + count]
                 validated, source = self.validate(config)
                 self.assertEqual(validated["esp32_ble"]["max_connections"], count)
                 self.assertEqual(len(validated["ble_client"]), count)
                 self.assertEqual(len(validated["binary_sensor"]), count)
+                self.assertEqual(len(validated["sensor"]), count * 2)
                 self.assertIn(f"rr_client_bms{count}", source)
                 self.assertNotIn(f"rr_client_bms{count + 1}", source)
                 expected_clients = ", ".join(
@@ -127,34 +130,92 @@ class ConfigurationTests(unittest.TestCase):
     def test_custom_timing(self) -> None:
         config = load_example(ROOT / "examples" / "five-bms.yaml")
         config["substitutions"].update(
-            rr_cycle_ms="23000",
-            rr_min_dwell_ms="37000",
+            rr_cycle_s="23",
+            rr_min_dwell_s="37",
             rr_check_interval="2s",
             rr_disconnect_timeout="7s",
+            rr_handover_delay="1500ms",
             bms_throttle="3s",
         )
         validated, source = self.validate(config)
         self.assertEqual(validated["interval"][0]["interval"], "2s")
         self.assertTrue(all(bms["throttle"] == "3s" for bms in validated["jk_bms_ble"]))
-        self.assertIn("elapsed < 23000", source)
-        self.assertIn("elapsed >= 37000", source)
+        self.assertIn("elapsed < 23 * 1000UL", source)
+        self.assertIn("elapsed >= 37 * 1000UL", source)
         self.assertRegex(
             source, re.compile(r"set_timeout_value\(.*?return 7000;", re.DOTALL)
+        )
+        self.assertRegex(
+            source, re.compile(r"set_delay\(.*?return 1500;", re.DOTALL)
         )
 
     def test_package_timing_defaults(self) -> None:
         config = load_example(ROOT / "examples" / "two-bms.yaml")
         for setting in (
-            "rr_cycle_ms", "rr_min_dwell_ms", "rr_check_interval", "rr_disconnect_timeout"
+            "rr_cycle_s", "rr_min_dwell_s", "rr_check_interval", "rr_disconnect_timeout",
+            "rr_handover_delay",
         ):
             del config["substitutions"][setting]
         validated, source = self.validate(config)
         self.assertEqual(validated["interval"][0]["interval"], "5s")
-        self.assertIn("elapsed < 60000", source)
-        self.assertIn("elapsed >= 10000", source)
+        self.assertIn("elapsed < 60 * 1000UL", source)
+        self.assertIn("elapsed >= 10 * 1000UL", source)
         self.assertRegex(
             source, re.compile(r"set_timeout_value\(.*?return 10000;", re.DOTALL)
         )
+        self.assertRegex(
+            source, re.compile(r"set_delay\(.*?return 1000;", re.DOTALL)
+        )
+
+    def test_retention_and_data_age(self) -> None:
+        for filename, count in (
+            ("two-bms.yaml", 2), ("five-bms.yaml", 5), ("jk-bms-gateway.yaml", 2)
+        ):
+            with self.subTest(example=filename):
+                config = load_example(ROOT / "examples" / filename)
+                if filename == "jk-bms-gateway.yaml":
+                    config["packages"]["round_robin"] = load_example(
+                        ROOT / "packages" / "round_robin.yaml"
+                    )
+                validated, source = self.validate(config)
+                measurements = [
+                    sensor for sensor in validated["sensor"]
+                    if sensor["platform"] == "jk_bms_ble"
+                ]
+                for index, measurement in enumerate(measurements):
+                    for key, sensor in measurement.items():
+                        if key in ("platform", "jk_bms_ble_id"):
+                            continue
+                        self.assertTrue(math.isnan(sensor["filters"][0]["filter_out"]))
+                    update = measurement["total_voltage"]["on_raw_value"][0]["then"][0]["lambda"]
+                    self.assertIn("std::isfinite(x)", update)
+                    self.assertIn(f"id(rr_last_data_us)[{index}] = esp_timer_get_time()", update)
+                ages = [
+                    sensor for sensor in validated["sensor"]
+                    if sensor["platform"] == "template"
+                ]
+                self.assertEqual(len(ages), count)
+                for index, age in enumerate(ages):
+                    self.assertEqual(age["unit_of_measurement"], "s")
+                    self.assertIn(f"id(rr_last_data_us)[{index}]", age["lambda"])
+                    self.assertIn("last == 0 ? NAN", age["lambda"])
+                self.assertIn("left IDLE during handover delay", source)
+                self.assertIn(f"std::vector<int64_t>({count}, 0)", source)
+                self.assertEqual(validated["logger"]["baud_rate"], 0)
+                self.assertEqual(validated["logger"]["logs"]["jk_bms_ble"], "WARN")
+
+    def test_handover_guards(self) -> None:
+        package = load_example(ROOT / "packages" / "round_robin.yaml")
+        actions = package["script"][0]["then"][0]["if"]["then"]
+        self.assertIn("wait_until", actions[1])
+        branch = actions[2]["if"]
+        self.assertEqual(branch["then"][0]["delay"], "${rr_handover_delay}")
+        enable = branch["then"][1]["lambda"]
+        self.assertLess(enable.index("ClientState::IDLE"), enable.index("set_enabled(true)"))
+        self.assertIn("id(rr_suspended)", enable)
+        self.assertEqual(branch["else"][0]["logger.log"]["level"], "ERROR")
+        ota_start = package["ota"][0]["on_begin"]["then"]
+        self.assertEqual(ota_start[1]["script.stop"], "rr_switch_connection")
 
 
 if __name__ == "__main__":

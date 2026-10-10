@@ -6,10 +6,11 @@ substitutions:
       online: rr_bms1_online
     - client: rr_client_bms2
       online: rr_bms2_online
-  rr_cycle_ms: "60000"
-  rr_min_dwell_ms: "10000"
+  rr_cycle_s: "60"
+  rr_min_dwell_s: "10"
   rr_check_interval: 5s
   rr_disconnect_timeout: 10s
+  rr_handover_delay: 1s
   bms_throttle: 5s
 
 esphome:
@@ -22,7 +23,7 @@ esp32:
     type: esp-idf
 
 external_components:
-  - source: github://syssi/esphome-jk-bms@main
+  - source: github://syssi/esphome-jk-bms@b4f711d180671143c35f9e36079f8652591c52a8
 
 packages:
   round_robin: !include ../packages/round_robin.yaml
@@ -33,6 +34,10 @@ wifi:
 
 logger:
   level: INFO
+  baud_rate: 0
+  logs:
+    jk_bms_ble: WARN
+    sensor: WARN
 
 api:
 
@@ -69,3 +74,45 @@ binary_sensor:
     online_status:
       id: rr_bms2_online
       name: "BMS 2 Online"
+
+sensor:
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms1
+    total_voltage:
+      name: "BMS 1 Total Voltage"
+      filters:
+        - filter_out: nan
+      on_raw_value:
+        - lambda: |-
+            if (std::isfinite(x)) {
+              id(rr_last_data_us)[0] = esp_timer_get_time();
+            }
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms2
+    total_voltage:
+      name: "BMS 2 Total Voltage"
+      filters:
+        - filter_out: nan
+      on_raw_value:
+        - lambda: |-
+            if (std::isfinite(x)) {
+              id(rr_last_data_us)[1] = esp_timer_get_time();
+            }
+  - platform: template
+    name: "BMS 1 Data Age"
+    unit_of_measurement: s
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: ${rr_check_interval}
+    lambda: |-
+      const int64_t last = id(rr_last_data_us)[0];
+      return last == 0 ? NAN : (esp_timer_get_time() - last) / 1000000.0f;
+  - platform: template
+    name: "BMS 2 Data Age"
+    unit_of_measurement: s
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: ${rr_check_interval}
+    lambda: |-
+      const int64_t last = id(rr_last_data_us)[1];
+      return last == 0 ? NAN : (esp_timer_get_time() - last) / 1000000.0f;
