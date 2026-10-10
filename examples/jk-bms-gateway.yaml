@@ -193,16 +193,19 @@ sensor:
   - platform: jk_bms_ble
     jk_bms_ble_id: bms200
     min_cell_voltage:
+      id: bms200_min_cell_voltage
       name: "jkbms200 Min Cell Voltage"
       filters: &retain_valid
         - filter_out: nan
     max_cell_voltage:
+      id: bms200_max_cell_voltage
       name: "jkbms200 Max Cell Voltage"
       filters: *retain_valid
     delta_cell_voltage:
       name: "jkbms200 Delta Cell Voltage"
       filters: *retain_valid
     average_cell_voltage:
+      id: bms200_average_cell_voltage
       name: "jkbms200 Average Cell Voltage"
       filters: *retain_valid
     total_voltage:
@@ -214,15 +217,19 @@ sensor:
               id(rr_last_data_us)[0] = esp_timer_get_time();
             }
     current:
+      id: bms200_current
       name: "jkbms200 Current"
       filters: *retain_valid
     power:
+      id: bms200_power
       name: "jkbms200 Power"
       filters: *retain_valid
     charging_power:
+      id: bms200_charging_power
       name: "jkbms200 Charging Power"
       filters: *retain_valid
     discharging_power:
+      id: bms200_discharging_power
       name: "jkbms200 Discharging Power"
       filters: *retain_valid
     temperature_sensor_1:
@@ -235,6 +242,7 @@ sensor:
       name: "jkbms200 MOSFET Temperature"
       filters: *retain_valid
     state_of_charge:
+      id: bms200_state_of_charge
       name: "jkbms200 State of Charge"
       filters: *retain_valid
     capacity_remaining:
@@ -249,15 +257,18 @@ sensor:
   - platform: jk_bms_ble
     jk_bms_ble_id: bms300
     min_cell_voltage:
+      id: bms300_min_cell_voltage
       name: "jkbms300 Min Cell Voltage"
       filters: *retain_valid
     max_cell_voltage:
+      id: bms300_max_cell_voltage
       name: "jkbms300 Max Cell Voltage"
       filters: *retain_valid
     delta_cell_voltage:
       name: "jkbms300 Delta Cell Voltage"
       filters: *retain_valid
     average_cell_voltage:
+      id: bms300_average_cell_voltage
       name: "jkbms300 Average Cell Voltage"
       filters: *retain_valid
     total_voltage:
@@ -269,15 +280,19 @@ sensor:
               id(rr_last_data_us)[1] = esp_timer_get_time();
             }
     current:
+      id: bms300_current
       name: "jkbms300 Current"
       filters: *retain_valid
     power:
+      id: bms300_power
       name: "jkbms300 Power"
       filters: *retain_valid
     charging_power:
+      id: bms300_charging_power
       name: "jkbms300 Charging Power"
       filters: *retain_valid
     discharging_power:
+      id: bms300_discharging_power
       name: "jkbms300 Discharging Power"
       filters: *retain_valid
     temperature_sensor_1:
@@ -290,6 +305,7 @@ sensor:
       name: "jkbms300 MOSFET Temperature"
       filters: *retain_valid
     state_of_charge:
+      id: bms300_state_of_charge
       name: "jkbms300 State of Charge"
       filters: *retain_valid
     capacity_remaining:
@@ -319,6 +335,176 @@ sensor:
     lambda: |-
       const int64_t last = id(rr_last_data_us)[1];
       return last == 0 ? NAN : (esp_timer_get_time() - last) / 1000000.0f;
+
+  # These aggregates assume two parallel 16-cell packs of comparable capacity.
+  - platform: template
+    id: combined_current
+    name: "Combined Current"
+    unit_of_measurement: A
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: ${rr_check_interval}
+    lambda: |-
+      const auto inputs = {id(bms200_current), id(bms300_current)};
+      if (inputs.size() != id(rr_clients).size()) {
+        return NAN;
+      }
+      float result = 0.0f;
+      for (auto *input : inputs) {
+        if (!input->has_state() || !std::isfinite(input->state)) {
+          return NAN;
+        }
+        result += input->state;
+      }
+      return result;
+  - platform: template
+    id: combined_power
+    name: "Combined Power"
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: ${rr_check_interval}
+    lambda: |-
+      const auto inputs = {id(bms200_power), id(bms300_power)};
+      if (inputs.size() != id(rr_clients).size()) {
+        return NAN;
+      }
+      float result = 0.0f;
+      for (auto *input : inputs) {
+        if (!input->has_state() || !std::isfinite(input->state)) {
+          return NAN;
+        }
+        result += input->state;
+      }
+      return result;
+  - platform: template
+    id: combined_charging_power
+    name: "Combined Charging Power"
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: ${rr_check_interval}
+    lambda: |-
+      const auto inputs = {id(bms200_charging_power), id(bms300_charging_power)};
+      if (inputs.size() != id(rr_clients).size()) {
+        return NAN;
+      }
+      float result = 0.0f;
+      for (auto *input : inputs) {
+        if (!input->has_state() || !std::isfinite(input->state)) {
+          return NAN;
+        }
+        result += input->state;
+      }
+      return result;
+  - platform: template
+    id: combined_discharging_power
+    name: "Combined Discharging Power"
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: ${rr_check_interval}
+    lambda: |-
+      const auto inputs = {id(bms200_discharging_power), id(bms300_discharging_power)};
+      if (inputs.size() != id(rr_clients).size()) {
+        return NAN;
+      }
+      float result = 0.0f;
+      for (auto *input : inputs) {
+        if (!input->has_state() || !std::isfinite(input->state)) {
+          return NAN;
+        }
+        result += input->state;
+      }
+      return result;
+  - platform: template
+    id: combined_state_of_charge
+    name: "Combined State of Charge"
+    unit_of_measurement: "%"
+    device_class: battery
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: ${rr_check_interval}
+    lambda: |-
+      const auto inputs = {id(bms200_state_of_charge), id(bms300_state_of_charge)};
+      if (inputs.size() != id(rr_clients).size()) {
+        return NAN;
+      }
+      float result = 0.0f;
+      for (auto *input : inputs) {
+        if (!input->has_state() || !std::isfinite(input->state)) {
+          return NAN;
+        }
+        result += input->state;
+      }
+      return result / inputs.size();
+  - platform: template
+    id: combined_average_cell_voltage
+    name: "Combined Average Cell Voltage"
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    update_interval: ${rr_check_interval}
+    lambda: |-
+      const auto inputs = {id(bms200_average_cell_voltage), id(bms300_average_cell_voltage)};
+      if (inputs.size() != id(rr_clients).size()) {
+        return NAN;
+      }
+      float result = 0.0f;
+      for (auto *input : inputs) {
+        if (!input->has_state() || !std::isfinite(input->state)) {
+          return NAN;
+        }
+        result += input->state;
+      }
+      return result / inputs.size();
+  - platform: template
+    id: combined_min_cell_voltage
+    name: "Combined Min Cell Voltage"
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    update_interval: ${rr_check_interval}
+    lambda: |-
+      const auto inputs = {id(bms200_min_cell_voltage), id(bms300_min_cell_voltage)};
+      if (inputs.size() != id(rr_clients).size()) {
+        return NAN;
+      }
+      float result = INFINITY;
+      for (auto *input : inputs) {
+        if (!input->has_state() || !std::isfinite(input->state)) {
+          return NAN;
+        }
+        result = input->state < result ? input->state : result;
+      }
+      return result;
+  - platform: template
+    id: combined_max_cell_voltage
+    name: "Combined Max Cell Voltage"
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    update_interval: ${rr_check_interval}
+    lambda: |-
+      const auto inputs = {id(bms200_max_cell_voltage), id(bms300_max_cell_voltage)};
+      if (inputs.size() != id(rr_clients).size()) {
+        return NAN;
+      }
+      float result = -INFINITY;
+      for (auto *input : inputs) {
+        if (!input->has_state() || !std::isfinite(input->state)) {
+          return NAN;
+        }
+        result = input->state > result ? input->state : result;
+      }
+      return result;
 
 switch:
   - platform: jk_bms_ble

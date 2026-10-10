@@ -129,6 +129,30 @@ sensor:
             if (std::isfinite(x)) {
               id(rr_last_data_us)[0] = esp_timer_get_time();
             }
+    current:
+      name: "BMS 1 Current"
+      filters: *retain_valid
+    power:
+      name: "BMS 1 Power"
+      filters: *retain_valid
+    charging_power:
+      name: "BMS 1 Charging Power"
+      filters: *retain_valid
+    discharging_power:
+      name: "BMS 1 Discharging Power"
+      filters: *retain_valid
+    average_cell_voltage:
+      name: "BMS 1 Average Cell Voltage"
+      filters: *retain_valid
+    temperature_sensor_1:
+      name: "BMS 1 Temperature Sensor 1"
+      filters: *retain_valid
+    temperature_sensor_2:
+      name: "BMS 1 Temperature Sensor 2"
+      filters: *retain_valid
+    state_of_charge:
+      name: "BMS 1 State of Charge"
+      filters: *retain_valid
   - platform: jk_bms_ble
     jk_bms_ble_id: rr_bms2
     total_voltage:
@@ -139,6 +163,30 @@ sensor:
             if (std::isfinite(x)) {
               id(rr_last_data_us)[1] = esp_timer_get_time();
             }
+    current:
+      name: "BMS 2 Current"
+      filters: *retain_valid
+    power:
+      name: "BMS 2 Power"
+      filters: *retain_valid
+    charging_power:
+      name: "BMS 2 Charging Power"
+      filters: *retain_valid
+    discharging_power:
+      name: "BMS 2 Discharging Power"
+      filters: *retain_valid
+    average_cell_voltage:
+      name: "BMS 2 Average Cell Voltage"
+      filters: *retain_valid
+    temperature_sensor_1:
+      name: "BMS 2 Temperature Sensor 1"
+      filters: *retain_valid
+    temperature_sensor_2:
+      name: "BMS 2 Temperature Sensor 2"
+      filters: *retain_valid
+    state_of_charge:
+      name: "BMS 2 State of Charge"
+      filters: *retain_valid
   - platform: jk_bms_ble
     jk_bms_ble_id: rr_bms3
     total_voltage:
@@ -149,6 +197,30 @@ sensor:
             if (std::isfinite(x)) {
               id(rr_last_data_us)[2] = esp_timer_get_time();
             }
+    current:
+      name: "BMS 3 Current"
+      filters: *retain_valid
+    power:
+      name: "BMS 3 Power"
+      filters: *retain_valid
+    charging_power:
+      name: "BMS 3 Charging Power"
+      filters: *retain_valid
+    discharging_power:
+      name: "BMS 3 Discharging Power"
+      filters: *retain_valid
+    average_cell_voltage:
+      name: "BMS 3 Average Cell Voltage"
+      filters: *retain_valid
+    temperature_sensor_1:
+      name: "BMS 3 Temperature Sensor 1"
+      filters: *retain_valid
+    temperature_sensor_2:
+      name: "BMS 3 Temperature Sensor 2"
+      filters: *retain_valid
+    state_of_charge:
+      name: "BMS 3 State of Charge"
+      filters: *retain_valid
   - platform: jk_bms_ble
     jk_bms_ble_id: rr_bms4
     total_voltage:
@@ -159,6 +231,30 @@ sensor:
             if (std::isfinite(x)) {
               id(rr_last_data_us)[3] = esp_timer_get_time();
             }
+    current:
+      name: "BMS 4 Current"
+      filters: *retain_valid
+    power:
+      name: "BMS 4 Power"
+      filters: *retain_valid
+    charging_power:
+      name: "BMS 4 Charging Power"
+      filters: *retain_valid
+    discharging_power:
+      name: "BMS 4 Discharging Power"
+      filters: *retain_valid
+    average_cell_voltage:
+      name: "BMS 4 Average Cell Voltage"
+      filters: *retain_valid
+    temperature_sensor_1:
+      name: "BMS 4 Temperature Sensor 1"
+      filters: *retain_valid
+    temperature_sensor_2:
+      name: "BMS 4 Temperature Sensor 2"
+      filters: *retain_valid
+    state_of_charge:
+      name: "BMS 4 State of Charge"
+      filters: *retain_valid
   - platform: jk_bms_ble
     jk_bms_ble_id: rr_bms5
     total_voltage:
@@ -169,6 +265,30 @@ sensor:
             if (std::isfinite(x)) {
               id(rr_last_data_us)[4] = esp_timer_get_time();
             }
+    current:
+      name: "BMS 5 Current"
+      filters: *retain_valid
+    power:
+      name: "BMS 5 Power"
+      filters: *retain_valid
+    charging_power:
+      name: "BMS 5 Charging Power"
+      filters: *retain_valid
+    discharging_power:
+      name: "BMS 5 Discharging Power"
+      filters: *retain_valid
+    average_cell_voltage:
+      name: "BMS 5 Average Cell Voltage"
+      filters: *retain_valid
+    temperature_sensor_1:
+      name: "BMS 5 Temperature Sensor 1"
+      filters: *retain_valid
+    temperature_sensor_2:
+      name: "BMS 5 Temperature Sensor 2"
+      filters: *retain_valid
+    state_of_charge:
+      name: "BMS 5 State of Charge"
+      filters: *retain_valid
   - platform: template
     name: "BMS 1 Data Age"
     unit_of_measurement: s
@@ -214,3 +334,25 @@ sensor:
     lambda: |-
       const int64_t last = id(rr_last_data_us)[4];
       return last == 0 ? NAN : (esp_timer_get_time() - last) / 1000000.0f;
+
+text_sensor:
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms1
+    errors:
+      name: "BMS 1 Errors"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms2
+    errors:
+      name: "BMS 2 Errors"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms3
+    errors:
+      name: "BMS 3 Errors"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms4
+    errors:
+      name: "BMS 4 Errors"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms5
+    errors:
+      name: "BMS 5 Errors"

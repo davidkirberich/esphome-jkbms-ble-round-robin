@@ -80,24 +80,71 @@ sensor:
     jk_bms_ble_id: rr_bms1
     total_voltage:
       name: "BMS 1 Total Voltage"
-      filters:
+      filters: &retain_valid
         - filter_out: nan
       on_raw_value:
         - lambda: |-
             if (std::isfinite(x)) {
               id(rr_last_data_us)[0] = esp_timer_get_time();
             }
+    current:
+      name: "BMS 1 Current"
+      filters: *retain_valid
+    power:
+      name: "BMS 1 Power"
+      filters: *retain_valid
+    charging_power:
+      name: "BMS 1 Charging Power"
+      filters: *retain_valid
+    discharging_power:
+      name: "BMS 1 Discharging Power"
+      filters: *retain_valid
+    average_cell_voltage:
+      name: "BMS 1 Average Cell Voltage"
+      filters: *retain_valid
+    temperature_sensor_1:
+      name: "BMS 1 Temperature Sensor 1"
+      filters: *retain_valid
+    temperature_sensor_2:
+      name: "BMS 1 Temperature Sensor 2"
+      filters: *retain_valid
+    state_of_charge:
+      name: "BMS 1 State of Charge"
+      filters: *retain_valid
   - platform: jk_bms_ble
     jk_bms_ble_id: rr_bms2
     total_voltage:
       name: "BMS 2 Total Voltage"
-      filters:
-        - filter_out: nan
+      filters: *retain_valid
       on_raw_value:
         - lambda: |-
             if (std::isfinite(x)) {
               id(rr_last_data_us)[1] = esp_timer_get_time();
             }
+    current:
+      name: "BMS 2 Current"
+      filters: *retain_valid
+    power:
+      name: "BMS 2 Power"
+      filters: *retain_valid
+    charging_power:
+      name: "BMS 2 Charging Power"
+      filters: *retain_valid
+    discharging_power:
+      name: "BMS 2 Discharging Power"
+      filters: *retain_valid
+    average_cell_voltage:
+      name: "BMS 2 Average Cell Voltage"
+      filters: *retain_valid
+    temperature_sensor_1:
+      name: "BMS 2 Temperature Sensor 1"
+      filters: *retain_valid
+    temperature_sensor_2:
+      name: "BMS 2 Temperature Sensor 2"
+      filters: *retain_valid
+    state_of_charge:
+      name: "BMS 2 State of Charge"
+      filters: *retain_valid
   - platform: template
     name: "BMS 1 Data Age"
     unit_of_measurement: s
@@ -107,6 +154,7 @@ sensor:
     lambda: |-
       const int64_t last = id(rr_last_data_us)[0];
       return last == 0 ? NAN : (esp_timer_get_time() - last) / 1000000.0f;
+
   - platform: template
     name: "BMS 2 Data Age"
     unit_of_measurement: s
@@ -116,3 +164,13 @@ sensor:
     lambda: |-
       const int64_t last = id(rr_last_data_us)[1];
       return last == 0 ? NAN : (esp_timer_get_time() - last) / 1000000.0f;
+
+text_sensor:
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms1
+    errors:
+      name: "BMS 1 Errors"
+  - platform: jk_bms_ble
+    jk_bms_ble_id: rr_bms2
+    errors:
+      name: "BMS 2 Errors"

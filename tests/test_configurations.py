@@ -100,7 +100,7 @@ class ConfigurationTests(unittest.TestCase):
         validated, source = self.validate(config)
         self.assertEqual(validated["esphome"]["name"], "jk-bms-gateway")
         self.assertEqual(len(validated["wifi"]["networks"]), 2)
-        self.assertEqual(len(validated["sensor"]), 9)
+        self.assertEqual(len(validated["sensor"]), 17)
         self.assertEqual(len(validated["switch"]), 2)
         self.assertEqual(validated["debug"]["update_interval"], "30s")
         diagnostics = {
@@ -112,6 +112,33 @@ class ConfigurationTests(unittest.TestCase):
             "BLE Restart Attempts", "BLE Restart Failures",
         }.issubset(diagnostics))
         self.assertIn("client_200, client_300", source)
+        aggregates = {
+            sensor["id"]: sensor for sensor in validated["sensor"]
+            if sensor["platform"] == "template" and sensor.get("id", "").startswith("combined_")
+        }
+        expected = {
+            "current": ("A", "return result;"),
+            "power": ("W", "return result;"),
+            "charging_power": ("W", "return result;"),
+            "discharging_power": ("W", "return result;"),
+            "state_of_charge": ("%", "return result / inputs.size();"),
+            "average_cell_voltage": ("V", "return result / inputs.size();"),
+            "min_cell_voltage": ("V", "input->state < result"),
+            "max_cell_voltage": ("V", "input->state > result"),
+        }
+        self.assertEqual(set(aggregates), {f"combined_{key}" for key in expected})
+        for key, (unit, operation) in expected.items():
+            aggregate = aggregates[f"combined_{key}"]
+            self.assertEqual(aggregate["unit_of_measurement"], unit)
+            self.assertEqual(aggregate["state_class"], "measurement")
+            self.assertEqual(aggregate["update_interval"], "5s")
+            self.assertNotIn("filters", aggregate)
+            code = aggregate["lambda"]
+            self.assertIn(f"id(bms200_{key}), id(bms300_{key})", code)
+            self.assertIn("inputs.size() != id(rr_clients).size()", code)
+            self.assertIn("!input->has_state() || !std::isfinite(input->state)", code)
+            self.assertIn("return NAN;", code)
+            self.assertIn(operation, code)
 
     def test_three_four_and_five_bms(self) -> None:
         example = load_example(ROOT / "examples" / "five-bms.yaml")
@@ -119,13 +146,14 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(count=count):
                 config = copy.deepcopy(example)
                 config["substitutions"]["rr_bms"] = config["substitutions"]["rr_bms"][:count]
-                for key in ("ble_client", "jk_bms_ble", "binary_sensor"):
+                for key in ("ble_client", "jk_bms_ble", "binary_sensor", "text_sensor"):
                     config[key] = config[key][:count]
                 config["sensor"] = config["sensor"][:count] + config["sensor"][5:5 + count]
                 validated, source = self.validate(config)
                 self.assertEqual(validated["esp32_ble"]["max_connections"], count)
                 self.assertEqual(len(validated["ble_client"]), count)
                 self.assertEqual(len(validated["binary_sensor"]), count)
+                self.assertEqual(len(validated["text_sensor"]), count)
                 self.assertEqual(len(validated["sensor"]), count * 2)
                 self.assertIn(f"rr_client_bms{count}", source)
                 self.assertNotIn(f"rr_client_bms{count + 1}", source)
@@ -191,7 +219,14 @@ class ConfigurationTests(unittest.TestCase):
                     sensor for sensor in validated["sensor"]
                     if sensor["platform"] == "jk_bms_ble"
                 ]
+                self.assertEqual(len(measurements), count)
+                required = {
+                    "total_voltage", "current", "power", "charging_power",
+                    "discharging_power", "average_cell_voltage",
+                    "temperature_sensor_1", "temperature_sensor_2", "state_of_charge",
+                }
                 for index, measurement in enumerate(measurements):
+                    self.assertTrue(required.issubset(measurement))
                     for key, sensor in measurement.items():
                         if key in ("platform", "jk_bms_ble_id"):
                             continue
@@ -199,6 +234,14 @@ class ConfigurationTests(unittest.TestCase):
                     update = measurement["total_voltage"]["on_raw_value"][0]["then"][0]["lambda"]
                     self.assertIn("std::isfinite(x)", update)
                     self.assertIn(f"id(rr_last_data_us)[{index}] = esp_timer_get_time()", update)
+                errors = [
+                    sensor for sensor in validated["text_sensor"]
+                    if sensor["platform"] == "jk_bms_ble"
+                ]
+                self.assertEqual(len(errors), count)
+                for measurement, error in zip(measurements, errors):
+                    self.assertEqual(measurement["jk_bms_ble_id"], error["jk_bms_ble_id"])
+                    self.assertIn("errors", error)
                 ages = [
                     sensor for sensor in validated["sensor"]
                     if sensor["platform"] == "template" and sensor["name"].endswith(" Data Age")
